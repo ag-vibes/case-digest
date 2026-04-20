@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from datetime import datetime, timedelta
 
@@ -6,10 +7,10 @@ from datetime import datetime, timedelta
 TAVILY_API_KEY   = os.environ["TAVILY_API_KEY"]
 GEMINI_API_KEY   = os.environ["GEMINI_API_KEY"]
 TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]  # например: @your_channel или -100xxxxxxxxxx
+TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 GEMINI_MODEL = "gemini-2.0-flash"
-MAX_SEARCH_RESULTS = 10  # результатов на один поисковый запрос
+MAX_SEARCH_RESULTS = 5  # уменьшено с 10 чтобы не превышать лимит токенов
 
 # ── Промпт ─────────────────────────────────────────────────────────────────
 DIGEST_PROMPT = """Подготавливай свежий еженедельный дайджест рекламных кейсов за последние 7 дней для профессиональной насмотренности. Собирай 3 блока: Россия, СНГ и зарубежные рынки. В зарубежный блок включай США, Европу, Азию и MENA. Включай только брендовые имиджевые кампании, OOH и DOOH, digital / social-first спецпроекты, федеральные рекламные кампании, активации, коллаборации, pop-up / experiential проекты. Исключай performance-маркетинг, трейд-активации и стандартные тактические промо-коммуникации. Для каждого кейса указывай: бренд, страна, название кампании, тип кейса, краткую идею, формат / механику, каналы, агентство / продакшн, какой инсайт, культурный код или общественный контекст кейс поймал, ссылку на источник. Пиши на русском, сохраняя оригинальные названия брендов, кампаний, агентств и проектов. Оформляй ответ как структурированный дайджест со ссылками: минимум 10 кейсов по России, минимум 5 по СНГ и минимум 10 по зарубежным рынкам, внутри блоков располагай кейсы от самых интересных к менее значимым. После каждого блока добавляй короткий вывод о заметных темах, визуальных кодах, механиках и культурных сигналах. В конце дай 3-5 ключевых наблюдений по неделе и укажи, какие идеи и форматы стоит отдельно отслеживать дальше. Не придумывай факты, агентства или детали; если информация не найдена, пиши, что она не указана в источнике."""
@@ -27,7 +28,6 @@ SEARCH_QUERIES = [
 
 
 def search_tavily(query: str) -> list[dict]:
-    """Поиск через Tavily, возвращает список {title, url, content}."""
     resp = requests.post(
         "https://api.tavily.com/search",
         json={
@@ -42,13 +42,12 @@ def search_tavily(query: str) -> list[dict]:
     resp.raise_for_status()
     results = resp.json().get("results", [])
     return [
-        {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")[:600]}
+        {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")[:400]}
         for r in results
     ]
 
 
 def collect_search_results() -> str:
-    """Запускает все поисковые запросы и собирает результаты в один текст."""
     all_results = []
     seen_urls = set()
 
@@ -62,13 +61,12 @@ def collect_search_results() -> str:
                         f"ЗАГОЛОВОК: {r['title']}\nССЫЛКА: {r['url']}\nОТРЫВОК: {r['content']}\n"
                     )
         except Exception as e:
-            print(f"Ошибка поиска по запросу '{query}': {e}")
+            print(f"Ошибка поиска '{query}': {e}")
 
     return "\n---\n".join(all_results)
 
 
 def generate_digest(search_results: str) -> str:
-    """Генерирует дайджест через Gemini."""
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
     today = datetime.now().strftime("%d.%m.%Y")
 
@@ -80,29 +78,34 @@ def generate_digest(search_results: str) -> str:
 
 {search_results}"""
 
-    resp = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
-        json={
-            "contents": [{"parts": [{"text": full_prompt}]}],
-            "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.4},
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    for attempt in range(3):
+        resp = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
+            json={
+                "contents": [{"parts": [{"text": full_prompt}]}],
+                "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.4},
+            },
+            timeout=120,
+        )
+        if resp.status_code == 429:
+            wait = 30 * (attempt + 1)
+            print(f"429 Too Many Requests, ждём {wait}с (попытка {attempt+1}/3)...")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    raise RuntimeError("Gemini вернул 429 три раза подряд, попробуй позже.")
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
-    """Разбивает текст на части для Telegram (лимит 4096 символов)."""
     if len(text) <= limit:
         return [text]
-
     parts = []
     while text:
         if len(text) <= limit:
             parts.append(text)
             break
-        # Ищем последний перенос строки в пределах лимита
         split_at = text.rfind("\n", 0, limit)
         if split_at == -1:
             split_at = limit
@@ -112,12 +115,11 @@ def split_message(text: str, limit: int = 4096) -> list[str]:
 
 
 def send_to_telegram(text: str):
-    """Отправляет сообщение в Telegram-канал, разбивая на части если нужно."""
     parts = split_message(text)
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
     for i, part in enumerate(parts):
-        prefix = f"📢 *Еженедельный дайджест рекламных кейсов*\n\n" if i == 0 else ""
+        prefix = "📢 *Еженедельный дайджест рекламных кейсов*\n\n" if i == 0 else ""
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": prefix + part,
@@ -126,7 +128,6 @@ def send_to_telegram(text: str):
         }
         resp = requests.post(url, json=payload, timeout=30)
         if not resp.ok:
-            # Если Markdown не прошёл — отправляем plain text
             payload["parse_mode"] = None
             resp = requests.post(url, json=payload, timeout=30)
         resp.raise_for_status()
