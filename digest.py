@@ -44,14 +44,19 @@ DIGEST_PROMPT = """Подготовь еженедельный дайджест 
 
 Пиши на русском, сохраняй оригинальные названия брендов, кампаний и агентств. Не придумывай факты — если информация не найдена в источнике, пиши «не указано»."""
 
+today = datetime.now()
+week_ago = today - timedelta(days=7)
+DATE_RANGE = f"{week_ago.strftime('%d.%m.%Y')} {today.strftime('%d.%m.%Y')}"
+YEAR = today.year
+
 SEARCH_QUERIES = [
-    "рекламные кампании бренды Россия 2025 неделя",
-    "OOH DOOH наружная реклама Россия 2025",
-    "brand campaign experiential activation 2025",
-    "OOH DOOH advertising campaign 2025",
-    "digital social campaign brand 2025",
-    "pop-up experiential brand activation Europe USA 2025",
-    "brand collaboration campaign MENA Asia 2025",
+    f"рекламные кампании бренды Россия {DATE_RANGE}",
+    f"OOH DOOH наружная реклама Россия {YEAR}",
+    f"brand campaign experiential activation {DATE_RANGE}",
+    f"OOH DOOH advertising campaign {YEAR}",
+    f"digital social campaign brand {DATE_RANGE}",
+    f"pop-up experiential brand activation Europe USA {YEAR}",
+    f"brand collaboration campaign MENA Asia {DATE_RANGE}",
 ]
 
 
