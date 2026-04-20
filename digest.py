@@ -4,16 +4,17 @@ import requests
 from datetime import datetime, timedelta
 
 # ── Настройки ──────────────────────────────────────────────────────────────
-TAVILY_API_KEY    = os.environ["TAVILY_API_KEY"]
+TAVILY_API_KEY     = os.environ["TAVILY_API_KEY"]
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
-TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
+TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 
-# Бесплатные модели на OpenRouter (можно менять):
-# - deepseek/deepseek-chat-v3-0324:free     — отлично пишет на русском
-# - meta-llama/llama-3.3-70b-instruct:free  — мощная альтернатива
-# - google/gemini-2.0-flash-exp:free        — Gemini через OpenRouter
-MODEL = "deepseek/deepseek-chat-v3-0324:free"
+# Список моделей — пробуем по очереди если предыдущая недоступна
+MODELS = [
+    "google/gemma-3-27b-it:free",              # основная: мощная, multilingual, 131K контекст
+    "meta-llama/llama-3.3-70b-instruct:free",  # запасная
+    "openrouter/free",                          # fallback: OpenRouter сам выберет
+]
 
 MAX_SEARCH_RESULTS = 5
 SNIPPET_LENGTH = 300
@@ -76,6 +77,46 @@ def collect_search_results() -> str:
     return "\n---\n".join(all_results)
 
 
+def call_openrouter(model: str, prompt: str) -> str | None:
+    """Один вызов OpenRouter. Возвращает текст или None при ошибке."""
+    for attempt in range(3):
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/digest-bot",
+            },
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 8192,
+                "temperature": 0.4,
+            },
+            timeout=180,
+        )
+
+        if resp.status_code == 429:
+            wait = 60 * (attempt + 1)
+            print(f"  429 Rate limit, ждём {wait}с (попытка {attempt+1}/3)...")
+            time.sleep(wait)
+            continue
+
+        if resp.status_code == 404:
+            print(f"  404 Модель не найдена: {model}")
+            return None
+
+        if not resp.ok:
+            print(f"  Ошибка {resp.status_code}: {resp.text[:200]}")
+            return None
+
+        content = resp.json()["choices"][0]["message"]["content"]
+        if content:
+            return content
+
+    return None
+
+
 def generate_digest(search_results: str) -> str:
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
     today = datetime.now().strftime("%d.%m.%Y")
@@ -88,33 +129,15 @@ def generate_digest(search_results: str) -> str:
 
 {search_results}"""
 
-    for attempt in range(3):
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/digest-bot",
-            },
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": full_prompt}],
-                "max_tokens": 8192,
-                "temperature": 0.4,
-            },
-            timeout=180,
-        )
+    for model in MODELS:
+        print(f"Пробуем модель: {model}")
+        result = call_openrouter(model, full_prompt)
+        if result:
+            print(f"Успешно сгенерировано через {model}")
+            return result
+        print(f"Модель {model} не сработала, пробуем следующую...")
 
-        if resp.status_code == 429:
-            wait = 60 * (attempt + 1)
-            print(f"429 Too Many Requests, ждём {wait}с (попытка {attempt+1}/3)...")
-            time.sleep(wait)
-            continue
-
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
-
-    raise RuntimeError("OpenRouter вернул 429 три раза подряд.")
+    raise RuntimeError("Все модели недоступны. Проверь ключ OPENROUTER_API_KEY.")
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
@@ -147,7 +170,6 @@ def send_to_telegram(text: str):
         }
         resp = requests.post(url, json=payload, timeout=30)
         if not resp.ok:
-            # Если Markdown сломался — отправляем plain text
             payload["parse_mode"] = None
             resp = requests.post(url, json=payload, timeout=30)
         resp.raise_for_status()
@@ -155,8 +177,6 @@ def send_to_telegram(text: str):
 
 
 def main():
-    print(f"Модель: {MODEL}")
-
     print("Собираем результаты поиска...")
     search_results = collect_search_results()
     print(f"Найдено материалов: {search_results.count('ЗАГОЛОВОК:')}")
