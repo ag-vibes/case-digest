@@ -1,136 +1,178 @@
 import os
 import time
 import requests
-from datetime import datetime, timedelta
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ── Настройки ──────────────────────────────────────────────────────────────
-TAVILY_API_KEY     = os.environ["TAVILY_API_KEY"]
 OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 
-MODELS = [
-    "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3-27b-it:free",
-    "openrouter/free",
-]
+MODEL = "anthropic/claude-haiku-4-5"
 
-MAX_SEARCH_RESULTS = 5
-SNIPPET_LENGTH = 400
+# ── RSS-источники ──────────────────────────────────────────────────────────
+RSS_FEEDS = {
+    "ru": [
+        ("Sostav.ru",  "https://www.sostav.ru/rss/news.xml"),
+        ("Adindex.ru", "https://adindex.ru/rss/news.xml"),
+        ("Cossa.ru",   "https://www.cossa.ru/rss/"),
+    ],
+    "intl": [
+        ("Ads of the World",  "https://www.adsoftheworld.com/feed"),
+        ("Campaign Live",     "https://www.campaignlive.com/rss"),
+        ("LBBonline",         "https://lbbonline.com/feed"),
+    ],
+}
 
-# ── Источники ──────────────────────────────────────────────────────────────
-# Российские профильные сайты
-RU_DOMAINS = [
-    "sostav.ru",
-    "adindex.ru",
-    "cossa.ru",
-]
-
-# Зарубежные профильные сайты
-INTL_DOMAINS = [
-    "adsoftheworld.com",
-    "campaignlive.com",
-    "lbbonline.com",
-    "contagious.com",
-    "thefwa.com",
-]
-
-# ── Поисковые запросы ──────────────────────────────────────────────────────
-RU_QUERIES = [
-    "рекламная кампания бренд",
-    "OOH DOOH наружная реклама",
-    "спецпроект активация коллаборация",
-]
-
-INTL_QUERIES = [
-    "brand campaign creative",
-    "OOH DOOH advertising",
-    "experiential activation pop-up",
-    "brand collaboration campaign",
-]
+HEADERS = {"User-Agent": "Mozilla/5.0 (digest-bot/1.0)"}
 
 # ── Промпт ─────────────────────────────────────────────────────────────────
-DIGEST_PROMPT = """Подготовь еженедельный дайджест рекламных кейсов за последние 7 дней для профессиональной насмотренности. Собери ровно 2 блока: Россия и Зарубежные рынки. В зарубежный блок включай США, Европу, Азию и MENA.
+DIGEST_PROMPT = """Подготовь еженедельный дайджест рекламных кейсов для профессиональной насмотренности. Собери ровно 2 блока: Россия и Зарубежные рынки.
 
-Включай только: брендовые имиджевые кампании, OOH и DOOH, digital / social-first спецпроекты, федеральные рекламные кампании, активации, коллаборации, pop-up / experiential проекты.
-Исключай: performance-маркетинг, трейд-активации, стандартные промо-коммуникации.
+Включай только: брендовые имиджевые кампании, OOH и DOOH, digital / social-first спецпроекты, активации, коллаборации, pop-up / experiential проекты.
+Исключай: performance-маркетинг, трейд-активации, стандартные промо.
 
 В каждом блоке ровно 5 кейсов, от самых интересных к менее значимым.
 
-Для каждого кейса укажи кратко — не больше 4-5 строк:
-— Бренд, страна, тип кейса
-— Одно предложение: в чём суть кампании
-— Одно предложение: какой инсайт или культурный контекст поймал кейс
-— Ссылка на источник
+Для каждого кейса — не больше 4 строк:
+— **Бренд** · страна · тип кейса
+— Суть кампании одним предложением
+— Инсайт: какой культурный контекст поймал кейс
+— Источник: [название](ссылка)
 
-После каждого блока — 2-3 предложения: главные темы и сигналы недели.
+После каждого блока — 2 предложения о главных темах и сигналах недели.
 В конце — 2-3 ключевых наблюдения по неделе.
 
 Пиши на русском, сохраняй оригинальные названия брендов и кампаний.
-Не придумывай факты — если информация не найдена в источнике, пиши «не указано»."""
+Не придумывай факты — используй только то, что есть в материалах."""
 
 
-def search_tavily(query: str, domains: list[str]) -> list[dict]:
-    resp = requests.post(
-        "https://api.tavily.com/search",
-        json={
-            "api_key": TAVILY_API_KEY,
-            "query": query,
-            "search_depth": "basic",
-            "max_results": MAX_SEARCH_RESULTS,
-            "include_answer": False,
-            "include_domains": domains,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    results = resp.json().get("results", [])
-    return [
-        {
-            "title": r.get("title", ""),
-            "url": r.get("url", ""),
-            "content": r.get("content", "")[:SNIPPET_LENGTH],
-        }
-        for r in results
-    ]
+def fetch_rss(name: str, url: str, days: int = 7) -> list[dict]:
+    """Забирает статьи из RSS за последние N дней."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    articles = []
+
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        root = ET.fromstring(resp.content)
+
+        # Поддержка Atom и RSS
+        ns = {"atom": "http://www.w3.org/2005/Atom"}
+        items = root.findall(".//item") or root.findall(".//atom:entry", ns)
+
+        for item in items:
+            # Заголовок
+            title_el = item.find("title")
+            title = title_el.text.strip() if title_el is not None and title_el.text else ""
+
+            # Ссылка
+            link_el = item.find("link")
+            if link_el is not None:
+                link = link_el.text.strip() if link_el.text else link_el.get("href", "")
+            else:
+                link = ""
+
+            # Дата
+            date_el = item.find("pubDate") or item.find("atom:published", ns) or item.find("dc:date")
+            pub_date = None
+            if date_el is not None and date_el.text:
+                try:
+                    pub_date = parsedate_to_datetime(date_el.text.strip())
+                except Exception:
+                    try:
+                        pub_date = datetime.fromisoformat(date_el.text.strip().replace("Z", "+00:00"))
+                    except Exception:
+                        pass
+
+            # Фильтр по дате
+            if pub_date and pub_date < cutoff:
+                continue
+
+            # Описание
+            desc_el = item.find("description") or item.find("atom:summary", ns)
+            description = ""
+            if desc_el is not None and desc_el.text:
+                # Убираем HTML-теги простым способом
+                import re
+                description = re.sub(r"<[^>]+>", "", desc_el.text).strip()[:500]
+
+            if title and link:
+                articles.append({
+                    "source": name,
+                    "title": title,
+                    "link": link,
+                    "description": description,
+                    "date": pub_date.strftime("%d.%m.%Y") if pub_date else "дата неизвестна",
+                })
+
+    except Exception as e:
+        print(f"Ошибка RSS {name}: {e}")
+
+    return articles
 
 
-def collect_search_results() -> tuple[str, str]:
-    """Возвращает два отдельных блока: российские и зарубежные материалы."""
-    ru_results = []
-    intl_results = []
-    seen_urls = set()
+def collect_articles() -> tuple[list[dict], list[dict]]:
+    """Параллельно забирает статьи из всех RSS-источников."""
+    ru_articles = []
+    intl_articles = []
 
-    # Российские источники
-    for query in RU_QUERIES:
-        try:
-            results = search_tavily(query, RU_DOMAINS)
-            for r in results:
-                if r["url"] not in seen_urls:
-                    seen_urls.add(r["url"])
-                    ru_results.append(
-                        f"ЗАГОЛОВОК: {r['title']}\nССЫЛКА: {r['url']}\nОТРЫВОК: {r['content']}\n"
-                    )
-        except Exception as e:
-            print(f"Ошибка поиска RU '{query}': {e}")
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {}
 
-    # Зарубежные источники
-    for query in INTL_QUERIES:
-        try:
-            results = search_tavily(query, INTL_DOMAINS)
-            for r in results:
-                if r["url"] not in seen_urls:
-                    seen_urls.add(r["url"])
-                    intl_results.append(
-                        f"ЗАГОЛОВОК: {r['title']}\nССЫЛКА: {r['url']}\nОТРЫВОК: {r['content']}\n"
-                    )
-        except Exception as e:
-            print(f"Ошибка поиска INTL '{query}': {e}")
+        for lang, feeds in RSS_FEEDS.items():
+            for name, url in feeds:
+                future = executor.submit(fetch_rss, name, url)
+                futures[future] = lang
 
-    return "\n---\n".join(ru_results), "\n---\n".join(intl_results)
+        for future in as_completed(futures):
+            lang = futures[future]
+            articles = future.result()
+            if lang == "ru":
+                ru_articles.extend(articles)
+            else:
+                intl_articles.extend(articles)
+
+    # Сортируем по дате (свежие первые)
+    ru_articles.sort(key=lambda x: x["date"], reverse=True)
+    intl_articles.sort(key=lambda x: x["date"], reverse=True)
+
+    return ru_articles, intl_articles
 
 
-def call_openrouter(model: str, prompt: str) -> str | None:
+def format_articles(articles: list[dict]) -> str:
+    """Форматирует статьи для передачи в промпт."""
+    lines = []
+    for a in articles:
+        lines.append(
+            f"[{a['date']}] {a['source']}\n"
+            f"Заголовок: {a['title']}\n"
+            f"Ссылка: {a['link']}\n"
+            f"Описание: {a['description']}\n"
+        )
+    return "\n---\n".join(lines)
+
+
+def generate_digest(ru_articles: list[dict], intl_articles: list[dict]) -> str:
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
+    today = datetime.now().strftime("%d.%m.%Y")
+
+    ru_text = format_articles(ru_articles) if ru_articles else "Материалов не найдено."
+    intl_text = format_articles(intl_articles) if intl_articles else "Материалов не найдено."
+
+    full_prompt = f"""{DIGEST_PROMPT}
+
+Период: {week_ago} — {today}
+
+=== РОССИЙСКИЕ ИСТОЧНИКИ ===
+{ru_text}
+
+=== ЗАРУБЕЖНЫЕ ИСТОЧНИКИ ===
+{intl_text}"""
+
     for attempt in range(3):
         resp = requests.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -140,58 +182,24 @@ def call_openrouter(model: str, prompt: str) -> str | None:
                 "HTTP-Referer": "https://github.com/digest-bot",
             },
             json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "model": MODEL,
+                "messages": [{"role": "user", "content": full_prompt}],
                 "max_tokens": 4096,
                 "temperature": 0.4,
             },
-            timeout=300,
+            timeout=120,
         )
 
         if resp.status_code == 429:
-            wait = 60 * (attempt + 1)
-            print(f"  429 Rate limit, ждём {wait}с (попытка {attempt+1}/3)...")
+            wait = 30 * (attempt + 1)
+            print(f"429 Rate limit, ждём {wait}с...")
             time.sleep(wait)
             continue
 
-        if resp.status_code == 404:
-            print(f"  404 Модель не найдена: {model}")
-            return None
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
 
-        if not resp.ok:
-            print(f"  Ошибка {resp.status_code}: {resp.text[:200]}")
-            return None
-
-        content = resp.json()["choices"][0]["message"]["content"]
-        if content:
-            return content
-
-    return None
-
-
-def generate_digest(ru_results: str, intl_results: str) -> str:
-    week_ago = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
-    today = datetime.now().strftime("%d.%m.%Y")
-
-    full_prompt = f"""{DIGEST_PROMPT}
-
-Период дайджеста: {week_ago} — {today}
-
-=== РОССИЙСКИЕ ИСТОЧНИКИ (sostav.ru, adindex.ru, cossa.ru) ===
-{ru_results}
-
-=== ЗАРУБЕЖНЫЕ ИСТОЧНИКИ (adsoftheworld.com, campaignlive.com, lbbonline.com, contagious.com) ===
-{intl_results}"""
-
-    for model in MODELS:
-        print(f"Пробуем модель: {model}")
-        result = call_openrouter(model, full_prompt)
-        if result:
-            print(f"Успешно через {model}")
-            return result
-        print(f"Модель {model} не сработала, пробуем следующую...")
-
-    raise RuntimeError("Все модели недоступны. Проверь ключ OPENROUTER_API_KEY.")
+    raise RuntimeError("Не удалось получить ответ от модели.")
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
@@ -231,18 +239,22 @@ def send_to_telegram(text: str):
 
 
 def main():
-    print("Собираем материалы с профильных сайтов...")
-    ru_results, intl_results = collect_search_results()
-    print(f"Российские источники: {ru_results.count('ЗАГОЛОВОК:')} материалов")
-    print(f"Зарубежные источники: {intl_results.count('ЗАГОЛОВОК:')} материалов")
+    print("Парсим RSS-ленты...")
+    ru_articles, intl_articles = collect_articles()
+    print(f"Российские источники: {len(ru_articles)} статей")
+    print(f"Зарубежные источники: {len(intl_articles)} статей")
 
-    print("Генерируем дайджест...")
-    digest = generate_digest(ru_results, intl_results)
-    print(f"Дайджест сгенерирован ({len(digest)} символов)")
+    if not ru_articles and not intl_articles:
+        print("Нет материалов — дайджест не отправляем.")
+        return
+
+    print(f"Генерируем дайджест через {MODEL}...")
+    digest = generate_digest(ru_articles, intl_articles)
+    print(f"Готово ({len(digest)} символов)")
 
     print("Отправляем в Telegram...")
     send_to_telegram(digest)
-    print("Готово!")
+    print("Дайджест отправлен!")
 
 
 if __name__ == "__main__":
