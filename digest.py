@@ -18,12 +18,12 @@ RSS_FEEDS = {
     "ru": [
         ("Sostav.ru",  "https://www.sostav.ru/rss/news.xml"),
         ("Adindex.ru", "https://adindex.ru/rss/news.xml"),
-        ("Cossa.ru",   "https://www.cossa.ru/rss/"),
     ],
     "intl": [
-        ("Ads of the World",  "https://www.adsoftheworld.com/feed"),
-        ("Campaign Live",     "https://www.campaignlive.com/rss"),
-        ("LBBonline",         "https://lbbonline.com/feed"),
+        ("Adweek",        "https://www.adweek.com/feed/"),
+        ("The Drum",      "https://www.thedrum.com/rss"),
+        ("Marketing Week","https://www.marketingweek.com/feed/"),
+        ("LBBonline",     "https://lbbonline.com/feed"),
     ],
 }
 
@@ -96,7 +96,6 @@ def fetch_rss(name: str, url: str, days: int = 7) -> list[dict]:
             desc_el = item.find("description") or item.find("atom:summary", ns)
             description = ""
             if desc_el is not None and desc_el.text:
-                # Убираем HTML-теги простым способом
                 import re
                 description = re.sub(r"<[^>]+>", "", desc_el.text).strip()[:500]
 
@@ -109,8 +108,18 @@ def fetch_rss(name: str, url: str, days: int = 7) -> list[dict]:
                     "date": pub_date.strftime("%d.%m.%Y") if pub_date else "дата неизвестна",
                 })
 
+        print(f"  ✓ {name}: {len(articles)} статей за 7 дней (всего в ленте: {len(items)})")
+
+    except requests.exceptions.HTTPError as e:
+        print(f"  ✗ {name}: HTTP {e.response.status_code} — {url}")
+    except requests.exceptions.ConnectionError:
+        print(f"  ✗ {name}: не удалось подключиться — {url}")
+    except requests.exceptions.Timeout:
+        print(f"  ✗ {name}: таймаут — {url}")
+    except ET.ParseError as e:
+        print(f"  ✗ {name}: ошибка парсинга XML — {e}")
     except Exception as e:
-        print(f"Ошибка RSS {name}: {e}")
+        print(f"  ✗ {name}: {e}")
 
     return articles
 
