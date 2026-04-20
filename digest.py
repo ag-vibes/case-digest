@@ -4,13 +4,19 @@ import requests
 from datetime import datetime, timedelta
 
 # ── Настройки ──────────────────────────────────────────────────────────────
-TAVILY_API_KEY   = os.environ["TAVILY_API_KEY"]
-GEMINI_API_KEY   = os.environ["GEMINI_API_KEY"]
-TELEGRAM_TOKEN   = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+TAVILY_API_KEY    = os.environ["TAVILY_API_KEY"]
+OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
+TELEGRAM_TOKEN    = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_CHAT_ID  = os.environ["TELEGRAM_CHAT_ID"]
 
-GEMINI_MODEL = "gemini-2.0-flash"
-MAX_SEARCH_RESULTS = 5  # уменьшено с 10 чтобы не превышать лимит токенов
+# Бесплатные модели на OpenRouter (можно менять):
+# - deepseek/deepseek-chat-v3-0324:free     — отлично пишет на русском
+# - meta-llama/llama-3.3-70b-instruct:free  — мощная альтернатива
+# - google/gemini-2.0-flash-exp:free        — Gemini через OpenRouter
+MODEL = "deepseek/deepseek-chat-v3-0324:free"
+
+MAX_SEARCH_RESULTS = 5
+SNIPPET_LENGTH = 300
 
 # ── Промпт ─────────────────────────────────────────────────────────────────
 DIGEST_PROMPT = """Подготавливай свежий еженедельный дайджест рекламных кейсов за последние 7 дней для профессиональной насмотренности. Собирай 3 блока: Россия, СНГ и зарубежные рынки. В зарубежный блок включай США, Европу, Азию и MENA. Включай только брендовые имиджевые кампании, OOH и DOOH, digital / social-first спецпроекты, федеральные рекламные кампании, активации, коллаборации, pop-up / experiential проекты. Исключай performance-маркетинг, трейд-активации и стандартные тактические промо-коммуникации. Для каждого кейса указывай: бренд, страна, название кампании, тип кейса, краткую идею, формат / механику, каналы, агентство / продакшн, какой инсайт, культурный код или общественный контекст кейс поймал, ссылку на источник. Пиши на русском, сохраняя оригинальные названия брендов, кампаний, агентств и проектов. Оформляй ответ как структурированный дайджест со ссылками: минимум 10 кейсов по России, минимум 5 по СНГ и минимум 10 по зарубежным рынкам, внутри блоков располагай кейсы от самых интересных к менее значимым. После каждого блока добавляй короткий вывод о заметных темах, визуальных кодах, механиках и культурных сигналах. В конце дай 3-5 ключевых наблюдений по неделе и укажи, какие идеи и форматы стоит отдельно отслеживать дальше. Не придумывай факты, агентства или детали; если информация не найдена, пиши, что она не указана в источнике."""
@@ -42,7 +48,11 @@ def search_tavily(query: str) -> list[dict]:
     resp.raise_for_status()
     results = resp.json().get("results", [])
     return [
-        {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")[:400]}
+        {
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "content": r.get("content", "")[:SNIPPET_LENGTH],
+        }
         for r in results
     ]
 
@@ -80,22 +90,31 @@ def generate_digest(search_results: str) -> str:
 
     for attempt in range(3):
         resp = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}",
-            json={
-                "contents": [{"parts": [{"text": full_prompt}]}],
-                "generationConfig": {"maxOutputTokens": 8192, "temperature": 0.4},
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/digest-bot",
             },
-            timeout=120,
+            json={
+                "model": MODEL,
+                "messages": [{"role": "user", "content": full_prompt}],
+                "max_tokens": 8192,
+                "temperature": 0.4,
+            },
+            timeout=180,
         )
+
         if resp.status_code == 429:
-            wait = 30 * (attempt + 1)
+            wait = 60 * (attempt + 1)
             print(f"429 Too Many Requests, ждём {wait}с (попытка {attempt+1}/3)...")
             time.sleep(wait)
             continue
-        resp.raise_for_status()
-        return resp.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-    raise RuntimeError("Gemini вернул 429 три раза подряд, попробуй позже.")
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+
+    raise RuntimeError("OpenRouter вернул 429 три раза подряд.")
 
 
 def split_message(text: str, limit: int = 4096) -> list[str]:
@@ -128,6 +147,7 @@ def send_to_telegram(text: str):
         }
         resp = requests.post(url, json=payload, timeout=30)
         if not resp.ok:
+            # Если Markdown сломался — отправляем plain text
             payload["parse_mode"] = None
             resp = requests.post(url, json=payload, timeout=30)
         resp.raise_for_status()
@@ -135,6 +155,8 @@ def send_to_telegram(text: str):
 
 
 def main():
+    print(f"Модель: {MODEL}")
+
     print("Собираем результаты поиска...")
     search_results = collect_search_results()
     print(f"Найдено материалов: {search_results.count('ЗАГОЛОВОК:')}")
