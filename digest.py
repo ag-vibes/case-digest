@@ -10,13 +10,44 @@ TELEGRAM_TOKEN     = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID   = os.environ["TELEGRAM_CHAT_ID"]
 
 MODELS = [
-    "google/gemma-4-31b-it:free",  # основная: свежая, multilingual, хорошо пишет на русском
-    "google/gemma-3-27b-it:free",  # запасная
-    "openrouter/free",             # fallback: OpenRouter сам выберет
+    "google/gemma-4-26b-a4b-it:free",
+    "google/gemma-3-27b-it:free",
+    "openrouter/free",
 ]
 
 MAX_SEARCH_RESULTS = 5
-SNIPPET_LENGTH = 300
+SNIPPET_LENGTH = 400
+
+# ── Источники ──────────────────────────────────────────────────────────────
+# Российские профильные сайты
+RU_DOMAINS = [
+    "sostav.ru",
+    "adindex.ru",
+    "cossa.ru",
+]
+
+# Зарубежные профильные сайты
+INTL_DOMAINS = [
+    "adsoftheworld.com",
+    "campaignlive.com",
+    "lbbonline.com",
+    "contagious.com",
+    "thefwa.com",
+]
+
+# ── Поисковые запросы ──────────────────────────────────────────────────────
+RU_QUERIES = [
+    "рекламная кампания бренд",
+    "OOH DOOH наружная реклама",
+    "спецпроект активация коллаборация",
+]
+
+INTL_QUERIES = [
+    "brand campaign creative",
+    "OOH DOOH advertising",
+    "experiential activation pop-up",
+    "brand collaboration campaign",
+]
 
 # ── Промпт ─────────────────────────────────────────────────────────────────
 DIGEST_PROMPT = """Подготовь еженедельный дайджест рекламных кейсов за последние 7 дней для профессиональной насмотренности. Собери ровно 2 блока: Россия и Зарубежные рынки. В зарубежный блок включай США, Европу, Азию и MENA.
@@ -26,41 +57,20 @@ DIGEST_PROMPT = """Подготовь еженедельный дайджест 
 
 В каждом блоке ровно 5 кейсов, от самых интересных к менее значимым.
 
-Для каждого кейса укажи:
-— Бренд
-— Страна
-— Название кампании
-— Тип кейса
-— Идея (2-3 предложения)
-— Формат / механика
-— Каналы
-— Агентство / продакшн (если не указано в источнике — напиши «не указано»)
-— Инсайт: какой культурный код или общественный контекст поймал кейс
-— Источник (ссылка)
+Для каждого кейса укажи кратко — не больше 4-5 строк:
+— Бренд, страна, тип кейса
+— Одно предложение: в чём суть кампании
+— Одно предложение: какой инсайт или культурный контекст поймал кейс
+— Ссылка на источник
 
-После каждого блока — короткий вывод: заметные темы, визуальные коды, механики, культурные сигналы недели.
+После каждого блока — 2-3 предложения: главные темы и сигналы недели.
+В конце — 2-3 ключевых наблюдения по неделе.
 
-В конце — 3 ключевых наблюдения по неделе и какие форматы стоит отслеживать дальше.
-
-Пиши на русском, сохраняй оригинальные названия брендов, кампаний и агентств. Не придумывай факты — если информация не найдена в источнике, пиши «не указано»."""
-
-today = datetime.now()
-week_ago = today - timedelta(days=7)
-DATE_RANGE = f"{week_ago.strftime('%d.%m.%Y')} {today.strftime('%d.%m.%Y')}"
-YEAR = today.year
-
-SEARCH_QUERIES = [
-    f"рекламные кампании бренды Россия {DATE_RANGE}",
-    f"OOH DOOH наружная реклама Россия {YEAR}",
-    f"brand campaign experiential activation {DATE_RANGE}",
-    f"OOH DOOH advertising campaign {YEAR}",
-    f"digital social campaign brand {DATE_RANGE}",
-    f"pop-up experiential brand activation Europe USA {YEAR}",
-    f"brand collaboration campaign MENA Asia {DATE_RANGE}",
-]
+Пиши на русском, сохраняй оригинальные названия брендов и кампаний.
+Не придумывай факты — если информация не найдена в источнике, пиши «не указано»."""
 
 
-def search_tavily(query: str) -> list[dict]:
+def search_tavily(query: str, domains: list[str]) -> list[dict]:
     resp = requests.post(
         "https://api.tavily.com/search",
         json={
@@ -69,6 +79,7 @@ def search_tavily(query: str) -> list[dict]:
             "search_depth": "basic",
             "max_results": MAX_SEARCH_RESULTS,
             "include_answer": False,
+            "include_domains": domains,
         },
         timeout=30,
     )
@@ -84,23 +95,39 @@ def search_tavily(query: str) -> list[dict]:
     ]
 
 
-def collect_search_results() -> str:
-    all_results = []
+def collect_search_results() -> tuple[str, str]:
+    """Возвращает два отдельных блока: российские и зарубежные материалы."""
+    ru_results = []
+    intl_results = []
     seen_urls = set()
 
-    for query in SEARCH_QUERIES:
+    # Российские источники
+    for query in RU_QUERIES:
         try:
-            results = search_tavily(query)
+            results = search_tavily(query, RU_DOMAINS)
             for r in results:
                 if r["url"] not in seen_urls:
                     seen_urls.add(r["url"])
-                    all_results.append(
+                    ru_results.append(
                         f"ЗАГОЛОВОК: {r['title']}\nССЫЛКА: {r['url']}\nОТРЫВОК: {r['content']}\n"
                     )
         except Exception as e:
-            print(f"Ошибка поиска '{query}': {e}")
+            print(f"Ошибка поиска RU '{query}': {e}")
 
-    return "\n---\n".join(all_results)
+    # Зарубежные источники
+    for query in INTL_QUERIES:
+        try:
+            results = search_tavily(query, INTL_DOMAINS)
+            for r in results:
+                if r["url"] not in seen_urls:
+                    seen_urls.add(r["url"])
+                    intl_results.append(
+                        f"ЗАГОЛОВОК: {r['title']}\nССЫЛКА: {r['url']}\nОТРЫВОК: {r['content']}\n"
+                    )
+        except Exception as e:
+            print(f"Ошибка поиска INTL '{query}': {e}")
+
+    return "\n---\n".join(ru_results), "\n---\n".join(intl_results)
 
 
 def call_openrouter(model: str, prompt: str) -> str | None:
@@ -142,7 +169,7 @@ def call_openrouter(model: str, prompt: str) -> str | None:
     return None
 
 
-def generate_digest(search_results: str) -> str:
+def generate_digest(ru_results: str, intl_results: str) -> str:
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%d.%m.%Y")
     today = datetime.now().strftime("%d.%m.%Y")
 
@@ -150,9 +177,11 @@ def generate_digest(search_results: str) -> str:
 
 Период дайджеста: {week_ago} — {today}
 
-Ниже — результаты поиска. Используй только реальные кейсы из этих источников:
+=== РОССИЙСКИЕ ИСТОЧНИКИ (sostav.ru, adindex.ru, cossa.ru) ===
+{ru_results}
 
-{search_results}"""
+=== ЗАРУБЕЖНЫЕ ИСТОЧНИКИ (adsoftheworld.com, campaignlive.com, lbbonline.com, contagious.com) ===
+{intl_results}"""
 
     for model in MODELS:
         print(f"Пробуем модель: {model}")
@@ -202,12 +231,13 @@ def send_to_telegram(text: str):
 
 
 def main():
-    print("Собираем результаты поиска...")
-    search_results = collect_search_results()
-    print(f"Найдено материалов: {search_results.count('ЗАГОЛОВОК:')}")
+    print("Собираем материалы с профильных сайтов...")
+    ru_results, intl_results = collect_search_results()
+    print(f"Российские источники: {ru_results.count('ЗАГОЛОВОК:')} материалов")
+    print(f"Зарубежные источники: {intl_results.count('ЗАГОЛОВОК:')} материалов")
 
     print("Генерируем дайджест...")
-    digest = generate_digest(search_results)
+    digest = generate_digest(ru_results, intl_results)
     print(f"Дайджест сгенерирован ({len(digest)} символов)")
 
     print("Отправляем в Telegram...")
