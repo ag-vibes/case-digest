@@ -1,14 +1,29 @@
-name: Weekly Ad Digest
+name: Case Digest manual check
 
 on:
-  schedule:
-    - cron: "16 7 * * 1"  # каждый понедельник в 10:16 по МСК (UTC+3 → 07:16 UTC)
-  workflow_dispatch:       # кнопка ручного запуска в GitHub
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Safe run mode
+        required: true
+        default: check
+        type: choice
+        options:
+          - check
+          - dry-run
+      include_telegram:
+        description: Read public Telegram sources
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
 
 jobs:
-  send-digest:
+  case-digest:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -16,15 +31,29 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          cache: pip
 
       - name: Install dependencies
-        run: pip install requests
+        run: pip install --requirement requirements.txt
 
-      - name: Run digest
+      - name: Run safe mode
         env:
-          TAVILY_API_KEY:     ${{ secrets.TAVILY_API_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          TELEGRAM_TOKEN:     ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python digest.py
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          SESSION_STRING: ${{ secrets.SESSION_STRING }}
+        run: >-
+          python digest.py
+          --mode "${{ inputs.mode }}"
+          ${{ inputs.include_telegram == false && '--without-telegram' || '' }}
+
+      - name: Summarize dry-run
+        if: ${{ inputs.mode == 'dry-run' }}
+        run: |
+          echo "### Case Digest dry-run" >> "$GITHUB_STEP_SUMMARY"
+          echo "No Telegram messages were published." >> "$GITHUB_STEP_SUMMARY"
+          sed -n '1,200p' artifacts/preview.md >> "$GITHUB_STEP_SUMMARY"

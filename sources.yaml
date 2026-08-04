@@ -1,0 +1,44 @@
+web:
+  - id: sostav
+    name: Sostav
+    region: ru
+    kind: rss
+    url: https://www.sostav.ru/rss/
+  - id: adindex
+    name: AdIndex
+    region: ru
+    kind: rss
+    url: https://adindex.ru/news/news.rss
+  - id: adweek
+    name: Adweek
+    region: intl
+    kind: rss
+    url: https://www.adweek.com/feed/
+  - id: famous_campaigns
+    name: Famous Campaigns
+    region: intl
+    kind: rss
+    url: https://famouscampaigns.substack.com/feed
+  - id: the_drum
+    name: The Drum
+    region: intl
+    kind: sitemap
+    url: https://www.thedrum.com/sitemap/articles/sitemap.xml
+    include_pattern: /news/
+  - id: marketing_week
+    name: Marketing Week
+    region: intl
+    kind: google_news
+    query: site:marketingweek.com when:7d
+    allowed_domain: marketingweek.com
+
+telegram:
+  - {id: dream_collab, name: "Коллаба мечты", region: ru, username: dream_collab}
+  - {id: itd_cases, name: "Кейсы ITD Agency", region: ru, username: ITDcases}
+  - {id: true_merch, name: "True Merch", region: ru, username: truemerch}
+  - {id: ad_yummy, name: "AdYummy", region: ru, username: AdYummy}
+  - {id: brand_cheatsheet, name: "Шпаргалка для бренда", region: ru, username: iamshpargalka}
+  - {id: olvtv, name: "Канал Миши Герасимова", region: ru, username: olvtv}
+  - {id: cultural_creative, name: "Культурный креатив", region: ru, username: cultcreative}
+  - {id: brainingram, name: "Braining.gram", region: ru, username: brainingram}
+
