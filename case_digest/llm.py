@@ -201,12 +201,28 @@ def _normalise_assessment_item(item: dict) -> dict:
         "confidence": ("confidence",),
     }
     for target, keys in aliases.items():
-        value = next((item[key] for key in keys if isinstance(item.get(key), (int, float))), None)
+        value = next((item[key] for key in keys if item.get(key) is not None), None)
         if value is None:
-            value = next((scores[key] for key in keys if isinstance(scores.get(key), (int, float))), 0)
-        normalised[target] = value
+            value = next((scores[key] for key in keys if scores.get(key) is not None), 0)
+        normalised[target] = _coerce_metric(value, maximum=1 if target == "confidence" else 10)
     normalised.pop("_default_is_case", None)
     return normalised
+
+
+def _coerce_metric(value: object, maximum: float) -> float:
+    if isinstance(value, str):
+        match = re.search(r"-?\d+(?:[.,]\d+)?", value)
+        if not match:
+            return 0
+        value = float(match.group().replace(",", "."))
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0
+    number = float(value)
+    if maximum == 1 and 1 < number <= 100:
+        number /= 100
+    elif maximum == 10 and 10 < number <= 100:
+        number /= 10
+    return max(0, min(number, maximum))
 
 
 def _assessment_schema() -> dict:

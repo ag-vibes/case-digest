@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import requests
@@ -29,6 +30,8 @@ def discover_with_tavily(
             ),
             "include_domains": [domain],
             "search_depth": "basic",
+            "topic": "news",
+            "days": 8,
             "max_results": 20,
             "include_raw_content": "text",
         },
@@ -39,7 +42,14 @@ def discover_with_tavily(
     for result in response.json().get("results", []):
         url = str(result.get("url", "")).strip()
         title = str(result.get("title", "")).strip()
-        if not url or not title or not _source_domain(url).endswith(domain):
+        published_at = _parse_tavily_date(result.get("published_date"))
+        if (
+            not url
+            or not title
+            or not _source_domain(url).endswith(domain)
+            or published_at is None
+            or published_at < period_start
+        ):
             continue
         raw_content = result.get("raw_content") or ""
         candidates.append(
@@ -50,6 +60,7 @@ def discover_with_tavily(
                 region=source.region,
                 title=title,
                 url=url,
+                published_at=published_at,
                 summary=str(result.get("content", ""))[:2000],
                 full_text=str(raw_content)[:20000] if raw_content else "",
                 extraction_method="tavily_discovery" if raw_content else None,
@@ -60,6 +71,21 @@ def discover_with_tavily(
 
 def _source_domain(url: str) -> str:
     return urlparse(url).netloc.lower().removeprefix("www.")
+
+
+def _parse_tavily_date(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(value.strip())
+        except (TypeError, ValueError):
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class ContentExtractor:
@@ -89,7 +115,7 @@ class ContentExtractor:
                 candidate.extraction_method = "direct"
                 return candidate
         except requests.RequestException as exc:
-            LOGGER.info("Direct extraction failed for %s: %s", candidate.url, exc)
+            LOGGER.debug("Direct extraction failed for %s: %s", candidate.url, exc)
 
         if self.tavily_api_key:
             tavily_result = self._tavily_extract(resolved_url)

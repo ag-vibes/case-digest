@@ -2,6 +2,7 @@ import pytest
 
 from case_digest.llm import (
     _assessment_schema,
+    _coerce_metric,
     _find_assessment_items,
     _normalise_assessment_item,
     _parse_json_content,
@@ -81,3 +82,11 @@ def test_cases_and_excluded_are_merged_and_normalised():
     assert items[0]["novelty"] == 8
     assert items[1]["is_case"] is False
     assert items[1]["exclusion_reason"] == "Не полноценный кейс"
+
+
+@pytest.mark.parametrize(
+    ("value", "maximum", "expected"),
+    [(95, 1, 0.95), ("80%", 10, 8), ("7.5/10", 10, 7.5), (120, 10, 10)],
+)
+def test_metric_coercion_handles_percentages(value, maximum, expected):
+    assert _coerce_metric(value, maximum) == expected

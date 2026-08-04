@@ -76,7 +76,7 @@ class WebCollector:
                 detail="" if items else "No recent candidates",
             )
         except Exception as exc:
-            LOGGER.exception("Source %s failed", source.id)
+            LOGGER.warning("Source %s failed: %s", source.id, exc)
             return [], SourceHealth(
                 source_id=source.id,
                 source_name=source.name,
