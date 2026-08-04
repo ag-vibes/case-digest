@@ -1,6 +1,7 @@
 import pytest
 
 from case_digest.llm import _assessment_schema, _find_assessment_items, _parse_json_content
+from case_digest.models import CaseAssessment
 
 
 def test_assessment_schema_requires_all_fields_and_forbids_extra():
@@ -33,3 +34,16 @@ def test_finds_assessment_list_in_common_model_wrappers(payload):
 def test_missing_assessments_has_clear_error():
     with pytest.raises(ValueError, match="top-level keys: answer"):
         _find_assessment_items({"answer": "not structured"})
+
+
+def test_partial_rejection_is_safe_and_scores_zero():
+    assessment = CaseAssessment.model_validate(
+        {
+            "candidate_url": "https://example.com/not-a-case",
+            "exclusion_reason": "Материал не описывает полноценный кейс",
+        }
+    )
+
+    assert assessment.is_case is False
+    assert assessment.weighted_score == 0
+    assert assessment.confidence == 0

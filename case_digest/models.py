@@ -48,7 +48,7 @@ class Candidate(BaseModel):
 
 class CaseAssessment(BaseModel):
     candidate_url: str
-    is_case: bool
+    is_case: bool = False
     brand: str = ""
     market: str = ""
     campaign: str = ""
@@ -58,12 +58,12 @@ class CaseAssessment(BaseModel):
     why_interesting: str = ""
     cultural_insight: str = ""
     evidence: str = ""
-    novelty: float = Field(ge=0, le=10)
-    insight: float = Field(ge=0, le=10)
-    clarity: float = Field(ge=0, le=10)
-    execution: float = Field(ge=0, le=10)
-    evidence_quality: float = Field(ge=0, le=10)
-    confidence: float = Field(ge=0, le=1)
+    novelty: float = Field(default=0, ge=0, le=10)
+    insight: float = Field(default=0, ge=0, le=10)
+    clarity: float = Field(default=0, ge=0, le=10)
+    execution: float = Field(default=0, ge=0, le=10)
+    evidence_quality: float = Field(default=0, ge=0, le=10)
+    confidence: float = Field(default=0, ge=0, le=1)
     exclusion_reason: str = ""
 
     @property
