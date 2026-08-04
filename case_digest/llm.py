@@ -119,7 +119,8 @@ class OpenRouterAssessor:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             parsed = _parse_json_content(content)
-            return [CaseAssessment.model_validate(item) for item in parsed["assessments"]]
+            items = _find_assessment_items(parsed)
+            return [CaseAssessment.model_validate(item) for item in items]
         return []
 
 
@@ -128,6 +129,35 @@ def _parse_json_content(content: str) -> dict:
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     return json.loads(cleaned)
+
+
+def _find_assessment_items(value: object) -> list[dict]:
+    if isinstance(value, list):
+        if not value or all(isinstance(item, dict) and "candidate_url" in item for item in value):
+            return value
+        for item in value:
+            try:
+                return _find_assessment_items(item)
+            except ValueError:
+                continue
+    if isinstance(value, dict):
+        if "candidate_url" in value:
+            return [value]
+        preferred_keys = ("assessments", "case_assessments", "results", "cases", "items")
+        for key in preferred_keys:
+            if key in value:
+                try:
+                    return _find_assessment_items(value[key])
+                except ValueError:
+                    continue
+        for nested in value.values():
+            try:
+                return _find_assessment_items(nested)
+            except ValueError:
+                continue
+        keys = ", ".join(sorted(str(key) for key in value))
+        raise ValueError(f"OpenRouter JSON contains no assessments; top-level keys: {keys}")
+    raise ValueError("OpenRouter JSON contains no assessment list")
 
 
 def _assessment_schema() -> dict:

@@ -28,6 +28,7 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper()),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    logging.getLogger("trafilatura").setLevel(logging.ERROR)
     settings = Settings.from_env()
     include_telegram = not args.without_telegram
     if args.mode == "check":
