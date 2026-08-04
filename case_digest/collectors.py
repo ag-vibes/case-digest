@@ -16,7 +16,10 @@ import requests
 from .models import Candidate, SourceConfig, SourceHealth, SourceKind
 
 LOGGER = logging.getLogger(__name__)
-USER_AGENT = "CaseDigest/0.1 (+https://github.com/ag-vibes/case-digest)"
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36 CaseDigest/0.1"
+)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

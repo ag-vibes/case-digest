@@ -1,6 +1,11 @@
 import pytest
 
-from case_digest.llm import _assessment_schema, _find_assessment_items, _parse_json_content
+from case_digest.llm import (
+    _assessment_schema,
+    _find_assessment_items,
+    _normalise_assessment_item,
+    _parse_json_content,
+)
 from case_digest.models import CaseAssessment
 
 
@@ -47,3 +52,32 @@ def test_partial_rejection_is_safe_and_scores_zero():
     assert assessment.is_case is False
     assert assessment.weighted_score == 0
     assert assessment.confidence == 0
+
+
+def test_cases_and_excluded_are_merged_and_normalised():
+    payload = {
+        "cases": [
+            {
+                "url": "https://example.com/case",
+                "scores": {
+                    "novelty": 8,
+                    "insight": 7,
+                    "clarity": 6,
+                    "execution": 9,
+                    "evidence_quality": 8,
+                },
+                "confidence": 0.9,
+            }
+        ],
+        "excluded": [
+            {"url": "https://example.com/news", "reason": "Не полноценный кейс"}
+        ],
+    }
+
+    items = [_normalise_assessment_item(item) for item in _find_assessment_items(payload)]
+
+    assert items[0]["candidate_url"] == "https://example.com/case"
+    assert items[0]["is_case"] is True
+    assert items[0]["novelty"] == 8
+    assert items[1]["is_case"] is False
+    assert items[1]["exclusion_reason"] == "Не полноценный кейс"

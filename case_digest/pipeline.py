@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .collectors import WebCollector
 from .config import Settings, load_sources
-from .extraction import ContentExtractor
+from .extraction import ContentExtractor, discover_with_tavily
 from .llm import OpenRouterAssessor
 from .models import Candidate, RunReport, SourceHealth, SourceKind
 from .publishing import render_preview
@@ -88,6 +88,24 @@ class Pipeline:
             futures = {executor.submit(WebCollector().collect, source, period_start): source for source in web_sources}
             for future in as_completed(futures):
                 items, status = future.result()
+                if status.status == "error" and self.settings.tavily_api_key:
+                    source = futures[future]
+                    try:
+                        fallback_items = discover_with_tavily(
+                            source, self.settings.tavily_api_key, period_start
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("Tavily discovery failed for %s: %s", source.id, exc)
+                    else:
+                        if fallback_items:
+                            items = fallback_items
+                            status = SourceHealth(
+                                source_id=source.id,
+                                source_name=source.name,
+                                status="fallback",
+                                candidates=len(items),
+                                detail="Direct source blocked; discovered via Tavily",
+                            )
                 candidates.extend(items)
                 health.append(status)
 

@@ -1,15 +1,65 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from urllib.parse import urlparse
 
 import requests
 import trafilatura
 
 from .collectors import USER_AGENT
-from .models import Candidate, SourceKind
+from .models import Candidate, SourceConfig, SourceKind
 
 LOGGER = logging.getLogger(__name__)
+
+
+def discover_with_tavily(
+    source: SourceConfig, api_key: str, period_start: datetime
+) -> list[Candidate]:
+    domain = source.allowed_domain or _source_domain(source.url or "")
+    if not domain:
+        return []
+    response = requests.post(
+        "https://api.tavily.com/search",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "query": (
+                f"site:{domain} advertising marketing campaign case "
+                f"after:{period_start.date().isoformat()}"
+            ),
+            "include_domains": [domain],
+            "search_depth": "basic",
+            "max_results": 20,
+            "include_raw_content": "text",
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    candidates: list[Candidate] = []
+    for result in response.json().get("results", []):
+        url = str(result.get("url", "")).strip()
+        title = str(result.get("title", "")).strip()
+        if not url or not title or not _source_domain(url).endswith(domain):
+            continue
+        raw_content = result.get("raw_content") or ""
+        candidates.append(
+            Candidate(
+                source_id=source.id,
+                source_name=source.name,
+                source_kind=source.kind,
+                region=source.region,
+                title=title,
+                url=url,
+                summary=str(result.get("content", ""))[:2000],
+                full_text=str(raw_content)[:20000] if raw_content else "",
+                extraction_method="tavily_discovery" if raw_content else None,
+            )
+        )
+    return candidates
+
+
+def _source_domain(url: str) -> str:
+    return urlparse(url).netloc.lower().removeprefix("www.")
 
 
 class ContentExtractor:
@@ -88,4 +138,3 @@ class ContentExtractor:
         except requests.RequestException as exc:
             LOGGER.info("Tavily search failed for %s: %s", candidate.title, exc)
         return None
-
